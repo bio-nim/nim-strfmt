@@ -1,9 +1,9 @@
-[Package]
-name = "strfmt"
-version = "0.8.5"
-author = "Frank Fischer"
-description = "A string formatting library inspired by Python's `format`"
-license = "MIT"
+# Package
 
-[Deps]
-Requires: "nimrod >= 0.11.2"
+version     = "0.10.0"
+author      = "Frank Fischer"
+description = "A string formatting library inspired by Python's `format`"
+license     = "MIT"
+
+# Deps
+requires "nim >= 0.19.0"

@@ -1,4 +1,4 @@
-# Copyright (c) 2014, 2015, 2016, 2017 Frank Fischer <frank-fischer@shadow-soft.de>
+# Copyright (c) 2014, 2015, 2016, 2017, 2018 Frank Fischer <frank-fischer@shadow-soft.de>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -23,7 +23,7 @@
 ## =============
 ## :Author: Frank Fischer
 ## :License: MIT
-## :Version: 0.8.5
+## :Version: 0.9.0
 ##
 ## Introduction
 ## ------------
@@ -118,7 +118,7 @@
 ##   at least `width` characters have been written.
 ##
 ## `,`
-##   Currently ignored.
+##   Add , as a thousands separator
 ##
 ## `precision`
 ##   The meaning of the precision field depends on the formatting
@@ -525,7 +525,7 @@ type
 
 const
   DefaultPrec = 6 ## Default precision for floating point numbers.
-  DefaultFmt*: Format = (ftDefault, -1, -1, nil, faDefault, fsMinus, false, false, false, nil) ## \
+  DefaultFmt*: Format = (ftDefault, -1, -1, "", faDefault, fsMinus, false, false, false, "") ## \
     ## Default format corresponding to the empty format string, i.e.
     ##   `x.format("") == x.format(DefaultFmt)`.
   round_nums = [0.5, 0.05, 0.005, 0.0005, 0.00005, 0.000005, 0.0000005, 0.00000005, 0.000000005, 0.0000000005]
@@ -544,8 +544,8 @@ proc parse*(fmt: string): Format {.nosideeffect.} =
     result.align = faDefault
   else:
     let rlen = fmt.runeLenAt(pos)
-    if fmt[pos + rlen] in { '<', '>', '^', '=' }:
-      result.fill = fmt[pos .. <pos+rlen]
+    if pos + rlen < fmt.len and fmt[pos + rlen] in { '<', '>', '^', '=' }:
+      result.fill = fmt[pos ..< pos+rlen]
       case fmt[pos + rlen]
       of '<': result.align = faLeft
       of '>': result.align = faRight
@@ -582,7 +582,7 @@ proc parse*(fmt: string): Format {.nosideeffect.} =
 
   # zero padding
   if pos < n and fmt[pos] == '0':
-    if result.fill != nil:
+    if result.fill.len > 0:
       raise newException(FormatError, "Leading 0 in with not allowed with explicit fill character")
     if result.align != faDefault:
       raise newException(FormatError, "Leading 0 in with not allowed with explicit alignment")
@@ -599,7 +599,7 @@ proc parse*(fmt: string): Format {.nosideeffect.} =
   # comma
   if pos < n and fmt[pos] == ',':
     result.comma = true
-    # warning("Comma ',' in format string is currently ignored")
+    pos.inc
 
   # precision
   if pos < n and fmt[pos] == '.':
@@ -635,10 +635,10 @@ proc parse*(fmt: string): Format {.nosideeffect.} =
 
   # array separator
   if pos < n and fmt[pos] == 'a':
-    result.arysep = fmt[pos+1 .. <fmt.len]
+    result.arysep = fmt[pos+1 ..< fmt.len]
     pos = fmt.len
   else:
-    result.arysep = nil
+    result.arysep = ""
 
   # end of format string
   if pos < n:
@@ -689,7 +689,7 @@ proc writefill(o: var Writer; fmt: Format; n: int; signum: int = 0) =
     elif fmt.sign == fsPlus: write(o, '+')
     elif fmt.sign == fsSpace: write(o, ' ')
 
-  if fmt.fill == nil:
+  if fmt.fill == "":
     for i in 1..n: write(o, ' ')
   else:
     for i in 1..n:
@@ -774,14 +774,20 @@ proc writeformat*(o: var Writer; i: SomeInteger; fmt: Format) =
   if fmt.sign != fsMinus or i < 0: len.inc
 
   var x: type(i) = abs(i)
-  var irev: type(i) = 0
+  var istr: array[0..31, uint8]
   var ilen = 0
+  const COMMA = 42.uint8 # a marker for a comma
   while x > 0.SomeInteger:
+    if fmt.comma and ilen mod 4 == 3:
+      istr[ilen] = COMMA
+      ilen.inc
+      len.inc
+    istr[ilen] = (x mod base).uint8
     len.inc
     ilen.inc
-    irev = irev * base + x mod base
     x = x div base
   if ilen == 0:
+    istr[ilen] = 0
     ilen.inc
     len.inc
 
@@ -802,10 +808,11 @@ proc writeformat*(o: var Writer; i: SomeInteger; fmt: Format) =
       raise newException(FormatError, "# only allowed with b, o, x or X")
   while ilen > 0:
     ilen.dec
-    let c = irev mod base
-    irev = irev div base
+    let c = istr[ilen]
     if c < 10:
       write(o, ('0'.int + c.int).char)
+    elif c == COMMA:
+      write(o, ',')
     elif fmt.upcase:
       write(o, ('A'.int + c.int - 10).char)
     else:
@@ -824,7 +831,7 @@ proc writeformat*(o: var Writer; p: pointer; fmt: Format) =
     f.baseprefix = true
   writeformat(o, add, cast[uint](p), f)
 
-proc writeformat*(o: var Writer; x: SomeReal; fmt: Format) =
+proc writeformat*(o: var Writer; x: SomeFloat; fmt: Format) =
   ## Write real number `x` according to format `fmt` using output
   ## object `o` and output function `add`.
   var fmt = fmt
@@ -872,8 +879,8 @@ proc writeformat*(o: var Writer; x: SomeReal; fmt: Format) =
       else:
         len += 4 # exponent
       # shift y so that 1 <= abs(y) < 2
-      if exp > 0: y /= pow(10.SomeReal, abs(exp).SomeReal)
-      elif exp < 0: y *= pow(10.SomeReal, abs(exp).SomeReal)
+      if exp > 0: y /= pow(10.SomeFloat, abs(exp).SomeFloat)
+      elif exp < 0: y *= pow(10.SomeFloat, abs(exp).SomeFloat)
     elif fmt.typ == ftPercent:
       len += 1 # percent sign
 
@@ -884,9 +891,12 @@ proc writeformat*(o: var Writer; x: SomeReal; fmt: Format) =
     var mult = 1'i64
     for i in 1..prec: mult *= 10
     var num = y.int64
-    var fr = ((y - num.SomeReal) * mult.SomeReal).int64
+    var fr = ((y - num.SomeFloat) * mult.SomeFloat).int64
     # build integer part string
     while num != 0:
+      if fmt.comma and numlen mod 4 == 3:
+        numstr[numlen] = ','
+        numlen.inc
       numstr[numlen] = ('0'.int + (num mod 10)).char
       numlen.inc
       num = num div 10
@@ -963,7 +973,7 @@ proc writeformat*(o: var Writer; ary: openarray[any]; fmt: Format) =
 
   var sep: string
   var nxtfmt = fmt
-  if fmt.arysep == nil:
+  if fmt.arysep == "":
     sep = "\t"
   elif fmt.arysep.len == 0:
     sep = ""
@@ -1094,7 +1104,7 @@ proc splitfmt(s: string): seq[Part] {.compiletime, nosideeffect.} =
       else:
         lvl.dec
     let clpos = pos
-    var fmtpart = Part(kind: pkFmt, arg: -1, fmt: s.substr(oppos+1, clpos-1), field: nil, index: int.high, nested: nested)
+    var fmtpart = Part(kind: pkFmt, arg: -1, fmt: s.substr(oppos+1, clpos-1), field: "", index: int.high, nested: nested)
     if fmtpart.fmt.len > 0:
       var pos = 0
       let n = fmtpart.fmt.len
@@ -1122,7 +1132,7 @@ proc splitfmt(s: string): seq[Part] {.compiletime, nosideeffect.} =
 
       # format specifier
       if pos < n and fmtpart.fmt[pos] == ':':
-        fmtpart.fmt = fmtpart.fmt[pos+1 .. <n]
+        fmtpart.fmt = fmtpart.fmt[pos+1 ..< n]
         pos = n
       else:
         fmtpart.fmt = ""
@@ -1135,7 +1145,7 @@ proc splitfmt(s: string): seq[Part] {.compiletime, nosideeffect.} =
 proc literal(s: string): NimNode {.compiletime, nosideeffect.} =
   ## Return the nim literal of string `s`. This handles the case if
   ## `s` is nil.
-  result = if s == nil: newNilLit() else: newLit(s)
+  result = newLit(s)
 
 proc literal(b: bool): NimNode {.compiletime, nosideeffect.} =
   ## Return the nim literal of boolean `b`. This is either `true`
@@ -1198,7 +1208,7 @@ proc generatefmt(fmtstr: string;
           args[arg].cnt = args[arg].cnt + 1
           arg.inc
         # possible field access
-        if part.field != nil and part.field.len > 0:
+        if part.field.len > 0:
           argexpr = newDotExpr(argexpr, part.field.ident)
         # possible array access
         if part.index < int.high:
@@ -1352,6 +1362,12 @@ macro `$$`*(fmtstr: string{lit}): untyped =
   result = geninterp(fmtstr.strval)
 
 when isMainModule:
+  type
+    Test = object
+      a: uint8
+      b: uint8
+      c: uint8
+
   # string with 's'
   doassert "hello".format("s") == "hello"
   doassert "hello".format("10s") == "hello     "
@@ -1402,6 +1418,13 @@ when isMainModule:
   doassert 42.format("0>-8") == "00000042"
   doassert 42.format(".^-8") == "...42..."
   doassert 42.format("-08") == "00000042"
+  doassert 999.format(",") == "999"
+  doassert 1000.format(",") == "1,000"
+  doassert 123456.format(",") == "123,456"
+  doassert 1234567.format(",") == "1,234,567"
+  doassert 1234567.format("7,") == "1,234,567"
+  doassert 1234567.format("10,") == " 1,234,567"
+  doassert 1234567.format("011,") == "001,234,567"
 
   doassert((-42).format(".<8") == "-42.....")
   doassert((-42).format(".>8") == ".....-42")
@@ -1568,6 +1591,12 @@ when isMainModule:
   doassert 123.456.format(".2G") == "1.2E+02"
   doassert 123.456.format(".3g") == "123"
   doassert 123.456.format(".10g") == "123.456"
+  doassert 1234.56.format(".10g") == "1234.56"
+  doassert 1234.56.format(",.10g") == "1,234.56"
+  doassert 123456.789.format(",.10g") == "123,456.789"
+  doassert 1234567.89.format(",.10g") == "1,234,567.89"
+  doassert 1234567.89.format(",.3f") == "1,234,567.890"
+  doassert 1234567.89.format("15,.3f") == "  1,234,567.890"
   doassert 0.00123456.format("f") == "0.001235"
   doassert 0.00123456.format("e") == "1.234560e-03"
   doassert 0.00123456.format("g") == "0.00123456"
@@ -1608,6 +1637,8 @@ when isMainModule:
 
   doassert "{0.name:.^10} {0.age}".fmt((name:"john", age:27)) == "...john... 27"
   doassert "{0[1]:.^10} {0[0]}".fmt(["27", "john"]) == "...john... 27"
+
+  doassert("{} {}".fmt(125u8, 254u8) == "125 254");
 
   var x = 0
   doassert "{0} {0}".fmt((x.inc; x)) == "1 1"
